@@ -28,9 +28,10 @@ const char* mqtt_password = SECRET_MQTT_PASSWD;
 
 const char* mqtt_setpoint = "SD18/thermostat/opentherm/setpoint";
 const char* mqtt_currtemp = "SD18/thermostat/opentherm/currtemp";
-const char* mqtt_setpoint = "SD18/thermostat/opentherm/setpoint_br";
-const char* mqtt_currtemp = "SD18/thermostat/opentherm/currtemp_br";
+const char* mqtt_setpoint_br = "zwave2mqtt/Bedroom/BedroomTRV/67/1/1/set";
+const char* mqtt_currtemp_br = "SD18/thermostat/opentherm/currtemp_br";
 const char* mqtt_command = "SD18/thermostat/opentherm/cmd";
+
 
 
 //antispam
@@ -52,6 +53,7 @@ float sp = 21, //set point
       op = 0; //PID controller output
 unsigned long ts = 0, new_ts = 0; //timestamp
 float currtemp = 20; //initial temp
+float currtemp_br = 20;
 
 
 float sp_br = 21, //set point
@@ -69,7 +71,42 @@ float getTemp() {
   return currtemp;
 }
 
-float pid(float sp, float pv, float pv_last, float& ierr, float dt) {
+float pid_br(float sp, float pv, float pv_last, float& ierr, float dt, String sensor) {
+  float Kc = 10.0; // K / %Heater
+  float tauI = 50.0; // sec
+  float tauD = 1.0;  // sec
+  // PID coefficients
+  float KP = Kc; //10
+  float KI = Kc / tauI; // 0.2
+  float KD = Kc * tauD; // 10
+  // upper and lower bounds on heater level
+  float ophi = 100;
+  float oplo = 0;
+  // calculate the error
+  float error = sp_br - pv_br;
+  // calculate the integral error
+  ierr_br = ierr_br + KI * error * dt;
+  // calculate the measurement derivative
+  float dpv = (pv_br - pv_last_br) / dt;
+   //publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug",String(dpv));
+  // calculate the PID output
+  float P = KP * error; //proportional contribution
+  float I = ierr_br; //integral contribution
+  float D = -KD * dpv; //derivative contribution
+  float op = P + I + D;
+  // implement anti-reset windup
+  if ((op < oplo) || (op > ophi)) {
+    I = I - KI * error * dt;
+    // clip output
+    op = max(oplo, min(ophi, op));
+  }
+  ierr_br = I;
+  publishMQTT("SD18/sandbox_thermostat/opentherm/sp_internal", String(sp));
+  publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug", "sensor="+sensor+" sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
+  return op;
+}
+
+float pid(float sp, float pv, float pv_last, float& ierr, float dt, String sensor) {
   float Kc = 10.0; // K / %Heater
   float tauI = 50.0; // sec
   float tauD = 1.0;  // sec
@@ -96,10 +133,12 @@ float pid(float sp, float pv, float pv_last, float& ierr, float dt) {
     I = I - KI * error * dt;
     // clip output
     op = max(oplo, min(ophi, op));
+    
+    
   }
   ierr = I;
-  publishMQTT("SD18/thermostat/opentherm/sp_internal", String(sp));
-  publishMQTT("SD18/thermostat/opentherm/debug", "sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
+  publishMQTT("SD18/sandbox_thermostat/opentherm/sp_internal", String(sp));
+  publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug", "sensor="+sensor+" sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
   return op;
 }
 
@@ -200,8 +239,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
     for (int i = 0; i < length; i++) {
       ctstring += (char)payload[i];
     }
-    currtemp_br = ctstring.toFloat();
-    Serial.println("Processed currtemp_br, it's now " + ctstring);
+    pv_br = ctstring.toFloat();
+    Serial.println("Processed currtemp_br, it's now " + String(ctstring.toFloat()));
   }
 
   if (strcmp(topic, mqtt_command) == 0) {
@@ -232,7 +271,7 @@ void reconnect() {
       client.subscribe(mqtt_setpoint);
       client.subscribe(mqtt_currtemp);
       client.subscribe(mqtt_setpoint_br);
-      client.subscribe(mqtt_currtemp_br)
+      client.subscribe(mqtt_currtemp_br);
       client.subscribe(mqtt_command);
 
     } else {
@@ -252,43 +291,46 @@ void loop(void) {
 
   if (new_ts - ts > 1000) { //every second
     //Set/Get Boiler Status
-    bool enableCentralHeating = true;
-    bool enableHotWater = true;
-    bool enableCooling = false;
-    unsigned long response = ot.setBoilerStatus(enableCentralHeating, enableHotWater, enableCooling);
-    OpenThermResponseStatus responseStatus = ot.getLastResponseStatus();
-    if (responseStatus != OpenThermResponseStatus::SUCCESS) {
-      Serial.println("Error: Invalid boiler response " + String(response, HEX));
-    }
+//    bool enableCentralHeating = true;
+//    bool enableHotWater = true;
+//    bool enableCooling = false;
+//    unsigned long response = ot.setBoilerStatus(enableCentralHeating, enableHotWater, enableCooling);
+//    OpenThermResponseStatus responseStatus = ot.getLastResponseStatus();
+//    if (responseStatus != OpenThermResponseStatus::SUCCESS) {
+//      Serial.println("Error: Invalid boiler response " + String(response, HEX));
+//    }
 
     pv = getTemp();
     dt = (new_ts - ts) / 1000.0;
     ts = new_ts;
-    if (responseStatus == OpenThermResponseStatus::SUCCESS) {
-      op = pid(sp, pv, pv_last, ierr, dt);
-      op_br = pid(sp_br, pv_br, pv_last_br, ierr_br, dt);
-      op = std::max(op,op_br);
+//    if (responseStatus == OpenThermResponseStatus::SUCCESS) {
+      op = pid(sp, pv, pv_last, ierr, dt,"living");
+      op_br = pid_br(sp_br, pv_br, pv_last_br, ierr_br, dt,"bedroom");
+      op = max(op,op_br);
+      publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug","OP result: "+ String(op));
+      
       //Set Boiler Temperature
-      ot.setBoilerTemperature(op);
-    }
+      //ot.setBoilerTemperature(op);
+   // }
     pv_last = pv;
+    pv_last_br = pv_br;
 
-    if (i == 1) {
-      float temperature = ot.getBoilerTemperature();
-      publishMQTT("SD18/thermostat/opentherm/debug/BoilerTemperature", String(temperature));
-    }
+//    if (i == 1) {
+//      float temperature = ot.getBoilerTemperature();
+//      publishMQTT("SD18/thermostat/opentherm/debug/BoilerTemperature", String(temperature));
+//    }
     
-    if (i == 5) {
-
-      unsigned int data = 0xFFFF;
-      unsigned long request = ot.buildRequest(
-                                OpenThermRequestType::READ,
-                                OpenThermMessageID::CHPressure,
-                                data);
-      unsigned long response = ot.sendRequest(request);
-      float parsedResponse = ot.getFloat(response);
-      publishMQTT("SD18/thermostat/opentherm/debug/CHPressure", String(parsedResponse));
-    }
+//    if (i == 5) {
+//
+//      unsigned int data = 0xFFFF;
+//      unsigned long request = ot.buildRequest(
+//                                OpenThermRequestType::READ,
+//                                OpenThermMessageID::CHPressure,
+//                                data);
+//      unsigned long response = ot.sendRequest(request);
+//      float parsedResponse = ot.getFloat(response);
+//      publishMQTT("SD18/thermostat/opentherm/debug/CHPressure", String(parsedResponse));
+//    }
     i = i + 1;
   }
 
