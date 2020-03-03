@@ -1,9 +1,20 @@
+#include <ArduinoJson.h>
+
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
 #include <OpenTherm.h>
+#include <LinkedList.h>
+
+class Thermostat {
+ public:
+    String name;
+    int pv, pv_last, sp, ierr,op,last_updated;
+};
+
+LinkedList<Thermostat*> thermList = LinkedList<Thermostat*>();
 
 
 
@@ -27,12 +38,16 @@ const char* mqtt_user = SECRET_MQTT_USER;
 const char* mqtt_password = SECRET_MQTT_PASSWD;
 
 const char* mqtt_setpoint = "SD18/thermostat/opentherm/setpoint";
+const char* mqtt_profile = "SD18/thermostat/opentherm/profile";
 const char* mqtt_currtemp = "SD18/thermostat/opentherm/currtemp";
 const char* mqtt_setpoint_br = "zwave2mqtt/Bedroom/BedroomTRV/67/1/1/set";
 const char* mqtt_currtemp_br = "SD18/thermostat/opentherm/currtemp_br";
 const char* mqtt_command = "SD18/thermostat/opentherm/cmd";
 
-
+void types(String a){Serial.println("it's a String");}
+void types(int a){Serial.println("it's an int");}
+void types(char* a){Serial.println("it's a char*");}
+void types(float a){Serial.println("it's a float");} 
 
 //antispam
 int i = 0;
@@ -142,6 +157,8 @@ float pid(float sp, float pv, float pv_last, float& ierr, float dt, String senso
   return op;
 }
 
+
+
 void publishMQTT(String topic, String incoming) {
   Serial.println("MQTT: " + topic + ":" + incoming);
   char charBuf[incoming.length() + 1];
@@ -173,6 +190,18 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
+void clearOldThermObjects(){
+  int threshold = 1000 * 60 * 60 * 48; // 2 dagen
+  int now = millis();
+  Thermostat* therm;
+  for(int i = 0; i < thermList.size();i++){
+    therm = thermList.get(i);
+    if(now - therm->last_updated > threshold){
+      thermList.remove(i);
+    }
+  }  
+  }
+
 void setup(void) {
   Serial.begin(115200);
   setup_wifi();
@@ -195,53 +224,87 @@ void setup(void) {
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.println("sub");
+Serial.println(topic);
   //2 chans, mqtt_setpoint & mqtt_currtemp
+  
+  // if (strcmp(topic, mqtt_setpoint) == 0) {
+  //   //process setpoint
+  //   String spstring = String();
+  //   for (int i = 0; i < length; i++) {
+  //     spstring += (char)payload[i];
 
-  if (strcmp(topic, mqtt_setpoint) == 0) {
-    //process setpoint
-    String spstring = String();
-    for (int i = 0; i < length; i++) {
-      spstring += (char)payload[i];
+  //   }
+  //   sp = spstring.toFloat();
 
+  //   Serial.println("Processed setpoint, it's now " + spstring);
+  // }
+
+    if (strcmp(topic, mqtt_profile) == 0) {
+        Serial.println("sub");
+StaticJsonDocument<256> doc;
+  deserializeJson(doc, payload, length);
+  // use the JsonDocument as usual...
+  String profile= doc["name"];
+  int value = doc["value"];
+  String key = doc["key"];
+  // Test if parsing succeeds.
+  Serial.println("Received key "+key + "  with value "+ value +" for " +profile);
+  types(key);
+  Thermostat *t;
+  bool found = false;
+  for(int i = 0; i < thermList.size();i++){
+    t = thermList.get(i);
+    if(t->name == profile){
+      Serial.println("list contained" + profile);
+      found = true;
+     if(String(key) == String("pv")){t->pv == value;t->last_updated = millis();}
+     if(String(key) == String("sp")){t->sp == value;t->last_updated = millis();}
     }
-    sp = spstring.toFloat();
+  }
+  if(found == false){
 
-    Serial.println("Processed setpoint, it's now " + spstring);
+    Thermostat *r = new Thermostat();
+    r->name = profile;
+    if(strcmp(String(key),String("pv")) == 0){r->pv == int(value);r->last_updated = millis(); }
+    if(String(key) == String("sp")){r->sp == int(value);r->last_updated = millis();}
+    thermList.add(r);
+    Serial.println("list didn't contain " + profile);
   }
 
-  if (strcmp(topic, mqtt_currtemp) == 0) {
-    //process currtemp
-    String ctstring = String();
-    for (int i = 0; i < length; i++) {
-      ctstring += (char)payload[i];
-    }
-    currtemp = ctstring.toFloat();
-    Serial.println("Processed currtemp, it's now " + ctstring);
-  }
+  } 
+
+  // if (strcmp(topic, mqtt_currtemp) == 0) {
+  //   //process currtemp
+  //   String ctstring = String();
+  //   for (int i = 0; i < length; i++) {
+  //     ctstring += (char)payload[i];
+  //   }
+  //   currtemp = ctstring.toFloat();
+  //   Serial.println("Processed currtemp, it's now " + ctstring);
+  // }
 
   
-  if (strcmp(topic, mqtt_setpoint_br) == 0) {
-    //process setpoint
-    String spstring = String();
-    for (int i = 0; i < length; i++) {
-      spstring += (char)payload[i];
+  // if (strcmp(topic, mqtt_setpoint_br) == 0) {
+  //   //process setpoint
+  //   String spstring = String();
+  //   for (int i = 0; i < length; i++) {
+  //     spstring += (char)payload[i];
 
-    }
-    sp_br = spstring.toFloat();
+  //   }
+  //   sp_br = spstring.toFloat();
 
-    Serial.println("Processed setpoint_br, it's now " + spstring);
-  }
+  //   Serial.println("Processed setpoint_br, it's now " + spstring);
+  // }
 
-  if (strcmp(topic, mqtt_currtemp_br) == 0) {
-    //process currtemp
-    String ctstring = String();
-    for (int i = 0; i < length; i++) {
-      ctstring += (char)payload[i];
-    }
-    pv_br = ctstring.toFloat();
-    Serial.println("Processed currtemp_br, it's now " + String(ctstring.toFloat()));
-  }
+  // if (strcmp(topic, mqtt_currtemp_br) == 0) {
+  //   //process currtemp
+  //   String ctstring = String();
+  //   for (int i = 0; i < length; i++) {
+  //     ctstring += (char)payload[i];
+  //   }
+  //   pv_br = ctstring.toFloat();
+  //   Serial.println("Processed currtemp_br, it's now " + String(ctstring.toFloat()));
+  // }
 
   if (strcmp(topic, mqtt_command) == 0) {
     //process currtemp
@@ -273,6 +336,7 @@ void reconnect() {
       client.subscribe(mqtt_setpoint_br);
       client.subscribe(mqtt_currtemp_br);
       client.subscribe(mqtt_command);
+      client.subscribe(mqtt_profile);
 
     } else {
       Serial.print("failed, rc=");
@@ -304,10 +368,10 @@ void loop(void) {
     dt = (new_ts - ts) / 1000.0;
     ts = new_ts;
 //    if (responseStatus == OpenThermResponseStatus::SUCCESS) {
-      op = pid(sp, pv, pv_last, ierr, dt,"living");
-      op_br = pid_br(sp_br, pv_br, pv_last_br, ierr_br, dt,"bedroom");
-      op = max(op,op_br);
-      publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug","OP result: "+ String(op));
+      //op = pid(sp, pv, pv_last, ierr, dt,"living");
+      //op_br = pid_br(sp_br, pv_br, pv_last_br, ierr_br, dt,"bedroom");
+      //op = max(op,op_br);
+      //publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug","OP result: "+ String(op));
       
       //Set Boiler Temperature
       //ot.setBoilerTemperature(op);
@@ -319,7 +383,13 @@ void loop(void) {
 //      float temperature = ot.getBoilerTemperature();
 //      publishMQTT("SD18/thermostat/opentherm/debug/BoilerTemperature", String(temperature));
 //    }
-    
+    if(i % 10 == 0){
+      Thermostat *bla ;
+      for(int i = 0; i<thermList.size();i++){
+        bla = thermList.get(i);
+        Serial.println("Name: "+bla->name + " , pv: "+ bla->pv +", sp "+ bla->sp);
+        }
+      }
 //    if (i == 5) {
 //
 //      unsigned int data = 0xFFFF;
