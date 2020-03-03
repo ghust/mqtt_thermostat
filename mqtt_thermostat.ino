@@ -1,9 +1,10 @@
+
 #include <ArduinoJson.h>
 
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+
+
 
 #include <OpenTherm.h>
 #include <LinkedList.h>
@@ -11,7 +12,14 @@
 class Thermostat {
  public:
     String name;
-    int pv, pv_last, sp, ierr,op,last_updated;
+    float pv, pv_last, sp, ierr,op;
+    int last_updated;
+//    Thermostat(String name){
+//      pv = 0;
+//      pv_last = 0;
+//      ierr = 0;
+//      op = 0;
+//      last_updated = millis();}
 };
 
 LinkedList<Thermostat*> thermList = LinkedList<Thermostat*>();
@@ -52,8 +60,7 @@ void types(float a){Serial.println("it's a float");}
 //antispam
 int i = 0;
 
-OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
+
 OpenTherm ot(inPin, outPin);
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -206,11 +213,7 @@ void setup(void) {
   Serial.begin(115200);
   setup_wifi();
 
-  //Init DS18B20 Sensor
-  sensors.begin();
-  sensors.requestTemperatures();
-  sensors.setWaitForConversion(false); //switch to async mode
-  pv, pv_last = sensors.getTempCByIndex(0);
+
   ts = millis();
 
   //Init OpenTherm Controller
@@ -239,6 +242,7 @@ Serial.println(topic);
   //   Serial.println("Processed setpoint, it's now " + spstring);
   // }
 
+
     if (strcmp(topic, mqtt_profile) == 0) {
         Serial.println("sub");
 StaticJsonDocument<256> doc;
@@ -255,18 +259,17 @@ StaticJsonDocument<256> doc;
   for(int i = 0; i < thermList.size();i++){
     t = thermList.get(i);
     if(t->name == profile){
-      Serial.println("list contained" + profile);
+      Serial.println("list contained " + profile);
       found = true;
-     if(String(key) == String("pv")){t->pv == value;t->last_updated = millis();}
-     if(String(key) == String("sp")){t->sp == value;t->last_updated = millis();}
+     if(String(key) == String("pv")){t->pv = float(value);t->last_updated = millis();}
+     if(String(key) == String("sp")){t->sp = float(value);t->last_updated = millis();}
     }
   }
   if(found == false){
-
     Thermostat *r = new Thermostat();
     r->name = profile;
-    if(strcmp(String(key),String("pv")) == 0){r->pv == int(value);r->last_updated = millis(); }
-    if(String(key) == String("sp")){r->sp == int(value);r->last_updated = millis();}
+    if(String(key) == String("pv")){r->pv = float(value);r->last_updated = millis();}
+    if(String(key) == String("sp")){r->sp = float(value);r->last_updated = millis();}
     thermList.add(r);
     Serial.println("list didn't contain " + profile);
   }
@@ -383,13 +386,32 @@ void loop(void) {
 //      float temperature = ot.getBoilerTemperature();
 //      publishMQTT("SD18/thermostat/opentherm/debug/BoilerTemperature", String(temperature));
 //    }
-    if(i % 10 == 0){
+    if(i % 1 == 0){
       Thermostat *bla ;
       for(int i = 0; i<thermList.size();i++){
         bla = thermList.get(i);
-        Serial.println("Name: "+bla->name + " , pv: "+ bla->pv +", sp "+ bla->sp);
+        ierr = bla->ierr;
+        new_ts = millis();
+        
+        dt = (bla->last_updated - new_ts)/1000;
+        Serial.println(bla -> last_updated - new_ts);
+        
+        sp = bla-> sp;
+        pv = bla -> pv;
+        pv_last = bla->pv_last;
+        ierr = bla -> ierr;
+        
+        op = pid(bla->sp,bla->pv,bla->pv_last,bla->ierr, dt, bla->name);
+        // result vars stashen
+        bla->op = op;
+        bla -> ierr = ierr;
+        bla-> last_updated = millis();
+        
+        bla-> pv_last = pv;
+        Serial.println("Name: "+bla->name + " , pv: "+ bla->pv +", sp "+ bla->sp + "last_updated "+bla->last_updated +" op: " + String(op));
         }
       }
+      
 //    if (i == 5) {
 //
 //      unsigned int data = 0xFFFF;
