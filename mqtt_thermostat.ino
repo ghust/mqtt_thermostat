@@ -13,7 +13,7 @@ class Thermostat {
  public:
     String name;
     float pv, pv_last, sp, ierr,op;
-    int last_updated;
+    int last_updated, last_used;
 //    Thermostat(String name){
 //      pv = 0;
 //      pv_last = 0;
@@ -72,7 +72,8 @@ float sp = 21, //set point
       pv_last = 0, //prior temperature
       ierr = 0, //integral error
       dt = 0, //time between measurements
-      op = 0; //PID controller output
+      op = 0, //PID controller output
+      globalierr = 0; // stashing
 unsigned long ts = 0, new_ts = 0; //timestamp
 float currtemp = 20; //initial temp
 float currtemp_br = 20;
@@ -128,7 +129,7 @@ float pid_br(float sp, float pv, float pv_last, float& ierr, float dt, String se
   return op;
 }
 
-float pid(float sp, float pv, float pv_last, float& ierr, float dt, String sensor) {
+float pid(float sp, float pv, float pv_last, float ierr, float dt) {
   float Kc = 10.0; // K / %Heater
   float tauI = 50.0; // sec
   float tauD = 1.0;  // sec
@@ -145,6 +146,7 @@ float pid(float sp, float pv, float pv_last, float& ierr, float dt, String senso
   ierr = ierr + KI * error * dt;
   // calculate the measurement derivative
   float dpv = (pv - pv_last) / dt;
+
   // calculate the PID output
   float P = KP * error; //proportional contribution
   float I = ierr; //integral contribution
@@ -159,8 +161,10 @@ float pid(float sp, float pv, float pv_last, float& ierr, float dt, String senso
     
   }
   ierr = I;
+  globalierr = I;
+  Serial.println("PID: setting ierr to "+String(ierr));
   publishMQTT("SD18/sandbox_thermostat/opentherm/sp_internal", String(sp));
-  publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug", "sensor="+sensor+" sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
+  publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug"," sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
   return op;
 }
 
@@ -249,17 +253,16 @@ StaticJsonDocument<256> doc;
   deserializeJson(doc, payload, length);
   // use the JsonDocument as usual...
   String profile= doc["name"];
-  int value = doc["value"];
+  float value = doc["value"];
   String key = doc["key"];
   // Test if parsing succeeds.
   Serial.println("Received key "+key + "  with value "+ value +" for " +profile);
-  types(key);
+
   Thermostat *t;
   bool found = false;
   for(int i = 0; i < thermList.size();i++){
     t = thermList.get(i);
     if(t->name == profile){
-      Serial.println("list contained " + profile);
       found = true;
      if(String(key) == String("pv")){t->pv = float(value);t->last_updated = millis();}
      if(String(key) == String("sp")){t->sp = float(value);t->last_updated = millis();}
@@ -271,7 +274,6 @@ StaticJsonDocument<256> doc;
     if(String(key) == String("pv")){r->pv = float(value);r->last_updated = millis();}
     if(String(key) == String("sp")){r->sp = float(value);r->last_updated = millis();}
     thermList.add(r);
-    Serial.println("list didn't contain " + profile);
   }
 
   } 
@@ -353,6 +355,7 @@ void reconnect() {
 
 
 void loop(void) {
+  float maxop = 0;
   new_ts = millis();
   i = i % 60; //antispam: Once every minute
 
@@ -387,28 +390,35 @@ void loop(void) {
 //      publishMQTT("SD18/thermostat/opentherm/debug/BoilerTemperature", String(temperature));
 //    }
     if(i % 1 == 0){
+      
       Thermostat *bla ;
+      if(thermList.size() > 0){
+        Serial.println("==================================");
+        }
       for(int i = 0; i<thermList.size();i++){
         bla = thermList.get(i);
         ierr = bla->ierr;
         new_ts = millis();
         
-        dt = (bla->last_updated - new_ts)/1000;
-        Serial.println(bla -> last_updated - new_ts);
-        
+        dt = (new_ts - bla->last_updated)/1000.0;
+
         sp = bla-> sp;
         pv = bla -> pv;
         pv_last = bla->pv_last;
-        ierr = bla -> ierr;
+        ierr = bla->ierr;
+        Serial.println("Processing profile : " + String(bla->name));
         
-        op = pid(bla->sp,bla->pv,bla->pv_last,bla->ierr, dt, bla->name);
+        op = pid(bla->sp,bla->pv,bla->pv_last,bla->ierr, dt);
+        maxop = max(op, maxop);
+        
+        Serial.println("The maximum op is : " + String(maxop));
         // result vars stashen
         bla->op = op;
-        bla -> ierr = ierr;
+        bla->ierr = globalierr;
         bla-> last_updated = millis();
         
         bla-> pv_last = pv;
-        Serial.println("Name: "+bla->name + " , pv: "+ bla->pv +", sp "+ bla->sp + "last_updated "+bla->last_updated +" op: " + String(op));
+        Serial.println("Name: "+bla->name + " , pv: "+ bla->pv +", sp "+ bla->sp + "last_updated "+bla->last_updated +" op: " + String(op) + " ierr: " + String(globalierr));
         }
       }
       
