@@ -132,8 +132,8 @@ float pid(float sp, float pv, float pv_last, float ierr, float dt) {
   }
   ierr = I;
   globalierr = I;
-  publishMQTT("SD18/sandbox_thermostat/opentherm/sp_internal", String(sp));
-  publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug", " sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
+  publishMQTT("SD18/thermostat/opentherm/sp_internal", String(sp));
+  publishMQTT("SD18/thermostat/opentherm/therm_debug", "sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
   return op;
 }
 
@@ -243,7 +243,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
   }
 
-   if (strcmp(topic, mqtt_command) == 0) {
+  if (strcmp(topic, mqtt_command) == 0) {
     //process currtemp
     String cmdstring = String();
     for (int i = 0; i < length; i++) {
@@ -288,7 +288,7 @@ void loop(void) {
   i = i % 60; //antispam: Once every minute
 
   if (new_ts - ts > 1000) { //every second
-    Set / Get Boiler Status
+   // Set / Get Boiler Status
     bool enableCentralHeating = true;
     bool enableHotWater = true;
     bool enableCooling = false;
@@ -317,22 +317,24 @@ void loop(void) {
         pv_last = bla->pv_last;
         ierr = bla->ierr;
         Serial.println("Processing profile : " + String(bla->name));
+        if (sp > 0 && pv > 0) {
+          op = pid(bla->sp, bla->pv, bla->pv_last, bla->ierr, dt);
+          maxop = max(op, maxop);
 
-        op = pid(bla->sp, bla->pv, bla->pv_last, bla->ierr, dt);
-        maxop = max(op, maxop);
+          Serial.println("The maximum op is : " + String(maxop));
+          // result vars stashen
+          bla->op = op;
+          bla->ierr = globalierr;
+          bla-> last_used = millis();
 
-        Serial.println("The maximum op is : " + String(maxop));
-        // result vars stashen
-        bla->op = op;
-        bla->ierr = globalierr;
-        bla-> last_used = millis();
-
-        bla-> pv_last = pv;
-        Serial.println("Name: " + bla->name + " , pv: " + bla->pv + ", sp " + bla->sp + "last_updated " + bla->last_updated + " op: " + String(op) + " ierr: " + String(globalierr));
+          bla-> pv_last = pv;
+          publishMQTT("SD18/thermostat/opentherm/debug", "Name=" + bla->name + " pv=" + bla->pv + " sp=" + bla->sp + " last_updated=" + bla->last_updated + " op=" + String(op) + " ierr=" + String(globalierr));
+        }else{Serial.println("Name: " + bla->name + "doesn't meet conditions, pv or sp is null");
+          }
       }
-      publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug", "OP result: " + String(opmax));
+      publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug", "OP result: " + String(maxop));
       //Set Boiler Temperature
-      ot.setBoilerTemperature(opmax);
+      ot.setBoilerTemperature(maxop);
     }
 
     if (i == 5) { //every minute
@@ -350,9 +352,9 @@ void loop(void) {
     if (i == 1) { //every minute
       float temperature = ot.getBoilerTemperature();
       publishMQTT("SD18/thermostat/opentherm/debug/BoilerTemperature", String(temperature));
-      
+
       clearOldThermObjects();
-      
+
     }
     i = i + 1;
   }
