@@ -5,7 +5,6 @@
 #include <PubSubClient.h>
 
 
-
 #include <OpenTherm.h>
 #include <LinkedList.h>
 
@@ -14,17 +13,9 @@ class Thermostat {
     String name;
     float pv, pv_last, sp, ierr, op;
     int last_updated, last_used;
-    //    Thermostat(String name){
-    //      pv = 0;
-    //      pv_last = 0;
-    //      ierr = 0;
-    //      op = 0;
-    //      last_updated = millis();}
 };
 
 LinkedList<Thermostat*> thermList = LinkedList<Thermostat*>();
-
-
 
 
 //OpenTherm input and output wires connected to 4 and 5 pins on the OpenTherm Shield
@@ -101,11 +92,11 @@ float getTemp() {
 
 float pid(float sp, float pv, float pv_last, float ierr, float dt) {
   float Kc = 10.0; // K / %Heater
-  float tauI = 50.0; // sec
+  float tauI = 200.0; // sec
   float tauD = 1.0;  // sec
   // PID coefficients
   float KP = Kc; //10
-  float KI = Kc / tauI; // 0.2
+  float KI = Kc / tauI; // 0.05
   float KD = Kc * tauD; // 10
   // upper and lower bounds on heater level
   float ophi = 100;
@@ -132,8 +123,7 @@ float pid(float sp, float pv, float pv_last, float ierr, float dt) {
   }
   ierr = I;
   globalierr = I;
-  publishMQTT("SD18/thermostat/opentherm/sp_internal", String(sp));
-  publishMQTT("SD18/thermostat/opentherm/therm_debug", "sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
+  //publishMQTT("SD18/thermostat/opentherm/therm_debug", "sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
   return op;
 }
 
@@ -148,6 +138,8 @@ void publishMQTT(String topic, String incoming) {
   topic.toCharArray(topicBuf, topic.length() + 1);
   client.publish(topicBuf, charBuf);
 }
+
+
 
 void setup_wifi() {
   delay(10);
@@ -171,13 +163,14 @@ void setup_wifi() {
 }
 
 void clearOldThermObjects() {
-  int threshold = 1000 * 60 * 60 * 1; // 1 hour
+  int threshold = 1000 * 60 * 15; // 15 minutes
   int now = millis();
   Thermostat* therm;
   for (int i = 0; i < thermList.size(); i++) {
     therm = thermList.get(i);
     if (now - therm->last_updated > threshold) {
       thermList.remove(i);
+      publishMQTT("SD18/thermostat/opentherm/clearOldTherm", "Removed Profile " + therm->name + ", it's last updated (" + therm->last_updated + " is more than 15 minutes ago than " + now );
     }
   }
 }
@@ -185,7 +178,6 @@ void clearOldThermObjects() {
 void setup(void) {
   Serial.begin(115200);
   setup_wifi();
-
 
   ts = millis();
 
@@ -288,7 +280,7 @@ void loop(void) {
   i = i % 60; //antispam: Once every minute
 
   if (new_ts - ts > 1000) { //every second
-   // Set / Get Boiler Status
+    // Set / Get Boiler Status
     bool enableCentralHeating = true;
     bool enableHotWater = true;
     bool enableCooling = false;
@@ -302,7 +294,7 @@ void loop(void) {
 
     Thermostat *bla ;
     if (thermList.size() > 0) {
-      Serial.println("==================================");
+      // Serial.println("==================================");
     }
     if (responseStatus == OpenThermResponseStatus::SUCCESS) {
       for (int i = 0; i < thermList.size(); i++) {
@@ -316,12 +308,12 @@ void loop(void) {
         pv = bla -> pv;
         pv_last = bla->pv_last;
         ierr = bla->ierr;
-        Serial.println("Processing profile : " + String(bla->name));
+        //Serial.println("Processing profile : " + String(bla->name));
         if (sp > 0 && pv > 0) {
           op = pid(bla->sp, bla->pv, bla->pv_last, bla->ierr, dt);
           maxop = max(op, maxop);
 
-          Serial.println("The maximum op is : " + String(maxop));
+          // Serial.println("The maximum op is : " + String(maxop));
           // result vars stashen
           bla->op = op;
           bla->ierr = globalierr;
@@ -329,10 +321,11 @@ void loop(void) {
 
           bla-> pv_last = pv;
           publishMQTT("SD18/thermostat/opentherm/debug", "Name=" + bla->name + " pv=" + bla->pv + " sp=" + bla->sp + " last_updated=" + bla->last_updated + " op=" + String(op) + " ierr=" + String(globalierr));
-        }else{Serial.println("Name: " + bla->name + "doesn't meet conditions, pv or sp is null");
-          }
+        } else {
+          //Serial.println("Name: " + bla->name + "doesn't meet conditions, pv or sp is null");
+        }
       }
-      publishMQTT("SD18/sandbox_thermostat/opentherm/therm_debug", "OP result: " + String(maxop));
+      publishMQTT("SD18/thermostat/opentherm/maxop",String(maxop));
       //Set Boiler Temperature
       ot.setBoilerTemperature(maxop);
     }
