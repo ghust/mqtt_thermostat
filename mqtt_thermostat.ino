@@ -1,9 +1,25 @@
+
+#include <ArduinoJson.h>
+
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
-#include <OneWire.h>
-#include <DallasTemperature.h>
+
+
 
 #include <OpenTherm.h>
+#include <LinkedList.h>
+
+class Thermostat {
+  public:
+    String name;
+    float pv, pv_last, sp, ierr, op;
+    int last_updated, last_used;
+};
+
+LinkedList<Thermostat*> thermList = LinkedList<Thermostat*>();
+
+
+
 
 //OpenTherm input and output wires connected to 4 and 5 pins on the OpenTherm Shield
 const int inPin = 4;
@@ -11,38 +27,63 @@ const int outPin = 5;
 
 //Data wire is connected to 14 pin on the OpenTherm Shield
 #define ONE_WIRE_BUS 14
+
+//All config is now in the secrets file. file is in same directory and looks like: #define SECRET_SSID "Stringvalue"
 #include "arduino_secrets.h"
 
 const char* ssid = SECRET_SSID;
 const char* password = SECRET_PASSWORD;
+
 const char* mqtt_server = SECRET_MQTT_IP;
 const int   mqtt_port = SECRET_MQTT_PORT;
 const char* mqtt_user = SECRET_MQTT_USER;
 const char* mqtt_password = SECRET_MQTT_PASSWD;
-const char* mqtt_pubchan = "SD18/thermostat/opentherm/pv";
-const char* mqtt_subchan = "SD18/thermostat/opentherm/sv";
-const char* mqtt_setpoint = "SD18/thermostat/opentherm/setpoint";
-const char* mqtt_currtemp = "SD18/thermostat/opentherm/currtemp";
+
+
+const char* mqtt_profile = "SD18/thermostat/opentherm/profile";
+const char* mqtt_command = "SD18/thermostat/opentherm/cmd";
+
+void types(String a) {
+  Serial.println("it's a String");
+}
+void types(int a) {
+  Serial.println("it's an int");
+}
+void types(char* a) {
+  Serial.println("it's a char*");
+}
+void types(float a) {
+  Serial.println("it's a float");
+}
 
 //antispam
 int i = 0;
 
-OneWire oneWire(ONE_WIRE_BUS);
-DallasTemperature sensors(&oneWire);
+
 OpenTherm ot(inPin, outPin);
 WiFiClient espClient;
 PubSubClient client(espClient);
 char buf[10];
 char buffel[10];
 
-float sp = 23, //set point
+float sp = 21, //set point
       pv = 0, //current temperature
       pv_last = 0, //prior temperature
       ierr = 0, //integral error
       dt = 0, //time between measurements
-      op = 0; //PID controller output
+      op = 0, //PID controller output
+      globalierr = 0; // stashing
 unsigned long ts = 0, new_ts = 0; //timestamp
 float currtemp = 20; //initial temp
+float currtemp_br = 20;
+
+
+float sp_br = 21, //set point
+      pv_br = 0, //current temperature
+      pv_last_br = 0, //prior temperature
+      ierr_br = 0, //integral error
+      dt_br = 0, //time between measurements
+      op_br = 0; //PID controller output
 
 void ICACHE_RAM_ATTR handleInterrupt() {
   ot.handleInterrupt();
@@ -52,14 +93,14 @@ float getTemp() {
   return currtemp;
 }
 
-float pid(float sp, float pv, float pv_last, float& ierr, float dt) {
+float pid(float sp, float pv, float pv_last, float ierr, float dt) {
   float Kc = 10.0; // K / %Heater
   float tauI = 50.0; // sec
   float tauD = 1.0;  // sec
   // PID coefficients
-  float KP = Kc;
-  float KI = Kc / tauI;
-  float KD = Kc * tauD;
+  float KP = Kc; //10
+  float KI = Kc / tauI; // 0.2
+  float KD = Kc * tauD; // 10
   // upper and lower bounds on heater level
   float ophi = 100;
   float oplo = 0;
@@ -69,6 +110,7 @@ float pid(float sp, float pv, float pv_last, float& ierr, float dt) {
   ierr = ierr + KI * error * dt;
   // calculate the measurement derivative
   float dpv = (pv - pv_last) / dt;
+
   // calculate the PID output
   float P = KP * error; //proportional contribution
   float I = ierr; //integral contribution
@@ -79,16 +121,18 @@ float pid(float sp, float pv, float pv_last, float& ierr, float dt) {
     I = I - KI * error * dt;
     // clip output
     op = max(oplo, min(ophi, op));
+
+
   }
   ierr = I;
-  publishMQTT("SD18/thermostat/opentherm/sp_internal", String(sp));
-  Serial.println("sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
-  publishMQTT("SD18/thermostat/opentherm/debug", "sp=" + String(sp) + " pv=" + String(pv) + " dt=" + String(dt) + " op=" + String(op) + " P=" + String(P) + " I=" + String(I) + " D=" + String(D));
+  globalierr = I;
   return op;
 }
 
-void publishMQTT(String topic, String incoming) {
 
+
+void publishMQTT(String topic, String incoming) {
+  //Serial.println("MQTT: " + topic + ":" + incoming);
   char charBuf[incoming.length() + 1];
   incoming.toCharArray(charBuf, incoming.length() + 1);
 
@@ -118,15 +162,23 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
+void clearOldThermObjects() {
+  int threshold = 1000 * 60 * 60 * 1; // 1 hour
+  int now = millis();
+  Thermostat* therm;
+  for (int i = 0; i < thermList.size(); i++) {
+    therm = thermList.get(i);
+    if (now - therm->last_updated > threshold) {
+      thermList.remove(i);
+    }
+  }
+}
+
 void setup(void) {
   Serial.begin(115200);
   setup_wifi();
 
-  //Init DS18B20 Sensor
-  sensors.begin();
-  sensors.requestTemperatures();
-  sensors.setWaitForConversion(false); //switch to async mode
-  pv, pv_last = sensors.getTempCByIndex(0);
+
   ts = millis();
 
   //Init OpenTherm Controller
@@ -135,59 +187,82 @@ void setup(void) {
   //Init MQTT Client
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
-}
 
-void publish_temperature() {
-  //String(sp).toCharArray(buf, 10);
-  //client.publish(mqtt_pubchan, buf);
-  //publishMQTT(String(sp));
+
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  Serial.println("sub");
-  //2 chans, mqtt_setpoint & mqtt_currtemp
-  if (strcmp(topic, mqtt_setpoint) == 0) {
-    //process setpoint
-    String spstring = String();
-    for (int i = 0; i < length; i++) {
-      spstring += (char)payload[i];
+  if (strcmp(topic, mqtt_profile) == 0) {
+    Serial.println("sub");
+    StaticJsonDocument<256> doc;
+    deserializeJson(doc, payload, length);
+    // use the JsonDocument as usual...
+    String profile = doc["name"];
+    float value = doc["value"];
+    String key = doc["key"];
+    // Test if parsing succeeds.
+    Serial.println("Received key " + key + "  with value " + value + " for " + profile);
 
+    Thermostat *t;
+    bool found = false;
+    for (int i = 0; i < thermList.size(); i++) {
+      t = thermList.get(i);
+      if (t->name == profile) {
+        found = true;
+        if (String(key) == String("pv")) {
+          t->pv = float(value);
+          t->last_updated = millis();
+        }
+        if (String(key) == String("sp")) {
+          t->sp = float(value);
+          t->last_updated = millis();
+        }
+      }
     }
-    sp = spstring.toFloat();
+    if (found == false) {
+      Thermostat *r = new Thermostat();
+      r->name = profile;
+      if (String(key) == String("pv")) {
+        r->pv = float(value);
+        r->last_updated = millis();
+      }
+      if (String(key) == String("sp")) {
+        r->sp = float(value);
+        r->last_updated = millis();
+      }
+      thermList.add(r);
+    }
 
-    Serial.println("Processed setpoint, it's now " + spstring);
   }
 
-  if (strcmp(topic, mqtt_currtemp) == 0) {
+  if (strcmp(topic, mqtt_command) == 0) {
     //process currtemp
-    String ctstring = String();
+    String cmdstring = String();
     for (int i = 0; i < length; i++) {
-      ctstring += (char)payload[i];
+      cmdstring += (char)payload[i];
     }
-    currtemp = ctstring.toFloat();
-    Serial.println("Processed currtemp, it's now " + ctstring);
+    if (cmdstring == "reboot") {
+      Serial.println("Rebooting...");
+      ESP.restart();
+    }
   }
-
-
 }
 
 void reconnect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    // Attempt to connect
+    // Attempt to connect using a random clientid
     String clientId = "Thermostat-";
     clientId += String(random(0xffff), HEX);
-    
+
     if (client.connect(clientId.c_str(), mqtt_user, mqtt_password)) {
-      Serial.println("connected as "+clientId);
+      Serial.println("connected as " + clientId);
       // Once connected, publish an announcement...
-      //client.subscribe(mqtt_subchan);
-      client.subscribe(mqtt_setpoint);
-      client.subscribe(mqtt_currtemp);
-      publish_temperature();
+
       // ... and resubscribe
-      client.subscribe(mqtt_setpoint);
-      client.subscribe(mqtt_currtemp);
+      client.subscribe(mqtt_command);
+      client.subscribe(mqtt_profile);
+
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -198,12 +273,16 @@ void reconnect() {
   }
 }
 
-void loop(void) {
-  new_ts = millis();
-  i = i % 20; //antispam: 1 om de 20x
 
-  if (new_ts - ts > 1000) {
-    //Set/Get Boiler Status
+void loop(void) {
+  client.loop();
+  Serial.println("MQTT Client loop: "+millis());
+  float maxop = 0;
+  new_ts = millis();
+  i = i % 60; //antispam: Once every minute
+
+  if (new_ts - ts > 1000) { //every second
+   // Set / Get Boiler Status
     bool enableCentralHeating = true;
     bool enableHotWater = true;
     bool enableCooling = false;
@@ -213,19 +292,63 @@ void loop(void) {
       Serial.println("Error: Invalid boiler response " + String(response, HEX));
     }
 
-    pv = getTemp();
-    dt = (new_ts - ts) / 1000.0;
-    ts = new_ts;
-    if (responseStatus == OpenThermResponseStatus::SUCCESS) {
-      op = pid(sp, pv, pv_last, ierr, dt);
-      //Set Boiler Temperature
-      ot.setBoilerTemperature(op);
-    }
-    pv_last = pv;
+    //every second, as per OpenTherm protocol:
 
-    if (i == 1) {
+    Thermostat *bla ;
+    if (thermList.size() > 0) {
+      //Serial.println("==================================");
+    }
+    if (responseStatus == OpenThermResponseStatus::SUCCESS) {
+      for (int i = 0; i < thermList.size(); i++) {
+        bla = thermList.get(i);
+        ierr = bla->ierr;
+        new_ts = millis();
+
+        dt = (new_ts - bla->last_used) / 1000.0;
+
+        sp = bla-> sp;
+        pv = bla -> pv;
+        pv_last = bla->pv_last;
+        ierr = bla->ierr;
+        //Serial.println("Processing profile : " + String(bla->name));
+        if (sp > 0 && pv > 0) {
+          op = pid(bla->sp, bla->pv, bla->pv_last, bla->ierr, dt);
+          maxop = max(op, maxop);
+
+          //Serial.println("The maximum op is : " + String(maxop));
+          // result vars stashen
+          bla->op = op;
+          bla->ierr = globalierr;
+          bla-> last_used = millis();
+
+          bla-> pv_last = pv;
+          publishMQTT("SD18/thermostat/opentherm/debug", "Name=" + bla->name + " pv=" + bla->pv + " sp=" + bla->sp + " last_updated=" + bla->last_updated + " op=" + String(op) + " ierr=" + String(globalierr));
+        }else{Serial.println("Name: " + bla->name + "doesn't meet conditions, pv or sp is null");
+          }
+      }
+      publishMQTT("SD18/thermostat/opentherm/maxop", String(maxop));
+      //Set Boiler Temperature
+      ot.setBoilerTemperature(maxop);
+    }
+
+    if (i == 5) { //every minute
+
+      unsigned int data = 0xFFFF;
+      unsigned long request = ot.buildRequest(
+                                OpenThermRequestType::READ,
+                                OpenThermMessageID::CHPressure,
+                                data);
+      unsigned long response = ot.sendRequest(request);
+      float parsedResponse = ot.getFloat(response);
+      publishMQTT("SD18/thermostat/opentherm/debug/CHPressure", String(parsedResponse));
+    }
+
+    if (i == 1) { //every minute
       float temperature = ot.getBoilerTemperature();
-      publishMQTT("SD18/thermostat/opentherm/debug/bt", "Boiler temperature is " + String(temperature) + " degrees C");
+      publishMQTT("SD18/thermostat/opentherm/debug/BoilerTemperature", String(temperature));
+
+      clearOldThermObjects();
+
     }
     i = i + 1;
   }
