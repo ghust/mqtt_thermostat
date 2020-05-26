@@ -92,7 +92,7 @@ float getTemp() {
 
 float pid(float sp, float pv, float pv_last, float ierr, float dt) {
   float Kc = 10.0; // K / %Heater
-  float tauI = 200.0; // sec
+  float tauI = 500.0; // sec
   float tauD = 1.0;  // sec
   // PID coefficients
   float KP = Kc; //10
@@ -238,7 +238,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
     float value = doc["value"];
     String key = doc["key"];
     // Test if parsing succeeds.
-    Serial.println("Received key " + key + "  with value " + value + " for " + profile);
+    publishMQTT("SD18/thermostat/opentherm/debug","Received key " + key + "  with value " + value + " for " + profile);
 
     Thermostat *t;
     bool found = false;
@@ -256,7 +256,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
         }
       }
     }
-    if (found == false) {
+    if (found == false && r->name) {
       Thermostat *r = new Thermostat();
       r->name = profile;
       if (String(key) == String("pv")) {
@@ -312,7 +312,6 @@ void reconnect() {
 
 
 void loop(void) {
-  ArduinoOTA.handle();
   float maxop = 0;
   new_ts = millis();
   i = i % 60; //antispam: Once every minute
@@ -395,4 +394,5 @@ void loop(void) {
     reconnect();
   }
   client.loop();
+  ArduinoOTA.handle();
 }
