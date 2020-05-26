@@ -40,17 +40,17 @@ const char* mqtt_password = SECRET_MQTT_PASSWD;
 const char* mqtt_profile = "SD18/thermostat/opentherm/profile";
 const char* mqtt_command = "SD18/thermostat/opentherm/cmd";
 
-void types(String a) {
-  Serial.println("it's a String");
+String types(String a) {
+  return "String";
 }
-void types(int a) {
-  Serial.println("it's an int");
+String types(int a) {
+  return "int";
 }
-void types(char* a) {
-  Serial.println("it's a char*");
+String types(char* a) {
+  return "char*";
 }
-void types(float a) {
-  Serial.println("it's a float");
+String types(float a) {
+  return "float";
 }
 
 //antispam
@@ -166,11 +166,12 @@ void clearOldThermObjects() {
   int threshold = 1000 * 60 * 15; // 15 minutes
   int now = millis();
   Thermostat* therm;
+  publishMQTT("SD18/thermostat/opentherm/clearOldTherm", "ThermList size: " + thermList.size());
   for (int i = 0; i < thermList.size(); i++) {
     therm = thermList.get(i);
     if (now - therm->last_updated > threshold) {
       thermList.remove(i);
-      publishMQTT("SD18/thermostat/opentherm/clearOldTherm", "Removed Profile " + therm->name + ", it's last updated (" + therm->last_updated + " is more than 15 minutes ago than " + now );
+      publishMQTT("SD18/thermostat/opentherm/clearOldTherm", "Removed Profile " + therm->name);
     }
   }
 }
@@ -238,8 +239,8 @@ void callback(char* topic, byte* payload, unsigned int length) {
     float value = doc["value"];
     String key = doc["key"];
     // Test if parsing succeeds.
+    if(value == 0){publishMQTT("SD18/thermostat/opentherm/debug","Breaking here, found a null value"); return;}
     publishMQTT("SD18/thermostat/opentherm/debug","Received key " + key + "  with value " + value + " for " + profile);
-
     Thermostat *t;
     bool found = false;
     for (int i = 0; i < thermList.size(); i++) {
@@ -256,7 +257,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
         }
       }
     }
-    if (found == false && r->name) {
+    if (found == false && profile.length() > 0) {
       Thermostat *r = new Thermostat();
       r->name = profile;
       if (String(key) == String("pv")) {
@@ -282,7 +283,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
       Serial.println("Rebooting...");
       ESP.restart();
     }
+
+    if (cmdstring == "clearThermList") {
+      thermList = LinkedList<Thermostat*>();
+    }
   }
+
+  
 }
 
 void reconnect() {
@@ -346,7 +353,7 @@ void loop(void) {
         pv_last = bla->pv_last;
         ierr = bla->ierr;
         //Serial.println("Processing profile : " + String(bla->name));
-        if (sp > 0 && pv > 0) {
+        if (sp > 0 && pv > 0 && !(isnan(sp)) && !(isnan(pv))) {
           op = pid(bla->sp, bla->pv, bla->pv_last, bla->ierr, dt);
           maxop = max(op, maxop);
 
@@ -357,7 +364,7 @@ void loop(void) {
           bla-> last_used = millis();
 
           bla-> pv_last = pv;
-          publishMQTT("SD18/thermostat/opentherm/debug", "Name=" + bla->name + " pv=" + bla->pv + " sp=" + bla->sp + " last_updated=" + bla->last_updated + " op=" + String(op) + " ierr=" + String(globalierr));
+          publishMQTT("SD18/thermostat/opentherm/pid", "Name=" + bla->name + " pv=" + bla->pv + " sp=" + bla->sp + " last_updated=" + bla->last_updated + " op=" + String(op) + " ierr=" + String(globalierr));
         } else {
           //Serial.println("Name: " + bla->name + "doesn't meet conditions, pv or sp is null");
         }
